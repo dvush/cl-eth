@@ -1,6 +1,7 @@
 (uiop:define-package #:eth/abi/base
   (:use #:cl)
   (:import-from #:serapeum
+		#:fmt
 		#:eval-always
 		#:match-of
 		#:defconst
@@ -24,7 +25,8 @@
 	   #:abi-string
 	   #:abi-tuple
 	   #:abi-tuple-types
-	   #:abi-static-type-p))
+	   #:abi-static-type-p
+	   #:abi-cannonical-name))
 (in-package #:eth/abi/base)
 
 (eval-always
@@ -78,6 +80,21 @@
 		     (incf total-size inner-size)
 		     (return (values nil 32))))
 	   finally (return (values t total-size))))
+    (_ (error "Unreachable, unknown type"))))
+
+
+(defun abi-cannonical-name (abi-type)
+  (match-of <abi-type> abi-type
+    ((abi-uint d) (fmt "uint~d" d)) 
+    ((abi-int d) (fmt "int~d" d))
+    (abi-address "address")
+    (abi-bool "bool")
+    ((abi-bytes-fixed n) (fmt "bytes~d" n))
+    (abi-bytes "bytes")
+    (abi-string "string")
+    ((abi-array ty) (fmt "~a[]" (abi-cannonical-name ty)))
+    ((abi-array-fixed size ty) (fmt "~a[~d]" (abi-cannonical-name ty) size))
+    ((abi-tuple inner-types) (fmt "(~{~a~^,~})" (map 'list #'abi-cannonical-name inner-types)))
     (_ (error "Unreachable, unknown type"))))
 
 
