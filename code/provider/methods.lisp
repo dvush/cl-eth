@@ -4,7 +4,9 @@
   (:import-from #:serapeum
 		#:length<=
 		#:octet-vector
-		#:->)
+		#:->
+		#:last-elt
+		#:median)
   (:import-from #:alexandria
 		#:required-argument)
   (:export #:web3/client-version
@@ -19,6 +21,8 @@
 	   #:eth/hashrate
 
 	   #:eth/gas-price
+	   #:eth/fee-history
+	   #:suggest-gas-fee
 	   #:eth/block-number
 
 	   #:eth/get-balance
@@ -36,6 +40,7 @@
 	   #:eth/get-tx-receipt
 
 	   #:eth/call
+	   #:eth/estimate-gas
 
 	   #:eth/get-logs
 	   #:eth/new-block-filter
@@ -80,6 +85,11 @@
 
 (defun eth/gas-price (&key (provider *default-provider*))
   (hex->int (rpc-call provider "eth_gasPrice")))
+
+(defun eth/fee-history (block-count &key (newest-block :latest)  reward-percentiles (provider *default-provider*) )
+  "see suggest-gas-fee for a simple wrapper"
+  (rpc-call provider "eth_feeHistory"
+	    (list (int->hex block-count) (block-tag->string newest-block) reward-percentiles)))
 
 (defun eth/block-number (&key (provider *default-provider*))
   (hex->int (rpc-call provider "eth_blockNumber")))
@@ -172,7 +182,17 @@
 ;; ; eth_call
 ;; ; eth_estimateGas
 
-(defun eth/call (&key (provider *default-provider*)
+(defun eth/call (&rest args &key provider to from gas gas-price value data (block :latest))
+  (declare (ignore provider to from gas gas-price value data block))
+  (hex->oct
+   (apply #'call-like-method "eth_call" args)))
+
+(defun eth/estimate-gas (&rest args &key provider to from gas gas-price value data (block :latest))
+  (declare (ignore provider to from gas gas-price value data block))
+  (hex->int
+   (apply #'call-like-method "eth_estimateGas" args)))
+
+(defun call-like-method (method &key (provider *default-provider*)
 		      (to (required-argument 'to))
 		      from 
 		      gas gas-price
@@ -196,8 +216,7 @@
       (setf (gethash "value" call) (int->hex value)))
     (when data
       (setf (gethash "data" call) (oct->hex data)))
-    (hex->oct
-     (rpc-call provider "eth_call" (list call (block-tag->string block))))))
+    (rpc-call provider method (list call (block-tag->string block)))))
 
 
 (defun eth/send-raw-tx (data &key (provider *default-provider*))
@@ -286,3 +305,31 @@
     (when tracer
       (setf (gethash "tracer" options) tracer))
     (rpc-call provider "debug_traceTransaction" (list (oct->hex hash) options))))
+
+
+
+(defun suggest-gas-fee (&key (provider *default-provider*)
+			     (block-count 5)
+			     (newest-block :latest)
+			     (base-fee-min-max-percentage-add 15)
+			     (tip-percentile 10))
+  (let* ((fee-history (eth/fee-history
+		       block-count
+		       :reward-percentiles (list tip-percentile)
+		       :newest-block newest-block
+		       :provider provider))
+	 
+	 ;; base fee = last base fee + (max - min)*base-fee-min-max-percentage-add% 
+	 (base-fees (map 'vector #'hex->int (gethash "baseFeePerGas" fee-history)))
+	 (max  (reduce #'max base-fees))
+	 (min  (reduce #'min base-fees))
+	 (var (- max min))
+	 (var-pct (/ base-fee-min-max-percentage-add 100))
+	 (last (last-elt base-fees))
+	 (suggested-base-fee (+ last (ceiling (* var var-pct))))
+	 
+	 ;; tip = median across blocks of (tip-percentile of txs in the block)
+	 (rewards-percentile (map 'vector (lambda (x) (hex->int (elt x 0))) (gethash "reward" fee-history)))
+	 (suggested-tip (median rewards-percentile)))
+    
+    (list :base-fee suggested-base-fee :tip suggested-tip)))
